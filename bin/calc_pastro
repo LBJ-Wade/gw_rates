@@ -43,9 +43,31 @@ def parse_commandline():
                         help="what classes would you like"
                         "to add to the FGMC calculation",
                         nargs='+', default=[])
+    parser.add_argument("--glitch-counts",
+                        help="glitch counts of the "
+                        "supplied --glitch-classes",
+                        nargs='+', default=[])
     parser.add_argument("--classification-type",
                         help="human or ml labels",
                         default='human')
+    parser.add_argument("--number-count-samples-per-walker",
+                        help="how many effective samples for the "
+                        "counts do you want",
+                        type=int, default=100)
+    parser.add_argument("--number-of-walkers",
+                        help="how many walkers for the "
+                        "mcmc do you want",
+                        type=int, default=100)
+    parser.add_argument("--number-count-samples-to-draw",
+                        help="how many lambdas do you want to "
+                        "marginalize over when calculating pastro",
+                        type=int, default=100)
+    parser.add_argument("--heatmap-filename",
+                        help="Name of probably of category heatmap.",
+                        default="probably_of_snrs_heatmap.png")
+    parser.add_argument("--lambda-corner-plot",
+                        help="Name of probably of category heatmap.",
+                        default="lambda_corner.png")
     args = parser.parse_args()
 
     return args
@@ -99,7 +121,11 @@ gaussian_background_count = args.gaussian_background_count
 
 collection = rt.ManyBackgroundCollection(snr_series_of_each_class)
 collection.draw_samples(foreground_count, gaussian_background_count,
-    glitch_classes=args.glitch_classes)
+    glitch_classes=args.glitch_classes, glitch_counts=args.glitch_counts)
+
+plot = collection.plot_hist()
+plot.savefig('hist.png')
+plt.close()
 
 logger.info('You are now drawing the following number of SNR samples'
             'for the following classes:')
@@ -145,8 +171,8 @@ for key in collection.samples.keys():
 
 logger.info('We now set up the MCMC for lambdas ')
 ndim = len(collection.samples)
-nwalkers=100
-num_samples = 100
+nwalkers = args.number_of_walkers
+num_samples =args.number_count_samples_per_walker
 
 logger.info('We are using {0} walkers'.format(nwalkers))
 logger.info('We are asking for {0} samples per walker'.format(num_samples))
@@ -159,32 +185,46 @@ sampler = emcee.EnsembleSampler(nwalkers, ndim, collection.lnprob,
 sampler.run_mcmc(pos_init, num_samples)
 post_samples = sampler.chain[:, :, :].reshape((-1, ndim))
 
-logger.info('Converting posterior sampeles on lamda to '
-            'Pandas DF'.format(nwalkers))
-
 columns = ['Foreground', 'Gaussian']
 
 for iglitch in args.glitch_classes:
     columns.append(iglitch)
 
+counts_true = [foreground_count, gaussian_background_count]
+
+for iglitchcount in args.glitch_counts:
+    counts_true.append(int(iglitchcount))
+
+fig = corner.corner(post_samples,
+                    labels=columns,
+                    truths=counts_true)
+
+fig.savefig('{0}'.format(args.lambda_corner_plot))
+plt.close()
+
+logger.info('Converting posterior sampeles on lamda to '
+            'Pandas DF'.format(nwalkers))
+
 count_samples = pd.DataFrame(post_samples,
                              columns=columns)
 
-num_draw_from_lamda = 100
+num_draw_from_lamda = args.number_count_samples_to_draw
 logger.info('Evaluating pastro of foreground samples using a random'
             'draw of {0} from the lambda posteriors calculated above'
-            'Pandas DF'.format(num_draw_from_lamda))
+            ''.format(num_draw_from_lamda))
 
 allcategories = pd.DataFrame()
 for ikey in collection.samples.keys():
+    logger.info('Calculating probability of snrs being from category'
+            ' {0}...'.format(ikey))
     pastro = rt.compute_pastro(collection,
         count_samples, args.glitch_classes, glitch_kdes, xmin=3.5,
         num_draw_from_lamda=num_draw_from_lamda, category=ikey)
     allcategories = pd.concat([allcategories,pd.DataFrame(pastro,
         index=collection.unlabeled_samples.round(3), columns=[ikey])], axis=1)
 
-logger.info('{0}'.format(allcategories.sum(axis=1)))
+
 plot = seaborn.heatmap(allcategories.sort_index(ascending=False),
                        vmin=0, vmax=1, cmap='viridis')
 fig = plot.get_figure()
-fig.savefig('Heatmap_of_category_by_randomly_sampled_snrs_colored_by_prob_of_cateogry.png')
+fig.savefig('{0}'.format(args.heatmap_filename))

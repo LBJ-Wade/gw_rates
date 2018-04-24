@@ -6,111 +6,8 @@ import numpy as np
 from sklearn.neighbors import KernelDensity
 from scipy.special import erf, erfc, erfinv
 
-__all__ = ['SampleCollection', 'ManyBackgroundCollection',
+__all__ = ['ManyBackgroundCollection',
            'lnprob', 'lnprior', 'lnlike']
-
-class SampleCollection(object):
-    """
-    A set of events with an associated ranking statistic
-    """
-    def __init__(self, rate_f_true, rate_b_true, xmin=0):
-        """
-        Initialize the sample collector
-
-        Parameters:
-        -----------
-        rate_f_true: float
-            known rate of foreground events
-
-        rate_b_true: float
-            known rate of background events
-
-        xmin: float
-            Minimum threshold SNR
-        """
-
-        self.ratio_b = rate_b_true / (rate_f_true + rate_b_true)
-        self.foreground = []
-        self.background = []
-        self.xmin = xmin
-        self.bins = None
-
-
-    def draw_samples(self, number=1):
-        """
-        Draw either a foreground or background event, based on the R ratios
-
-        Parameter:
-        ----------
-        number: int
-            number of samples to draw
-        """
-
-        for i in np.arange(number):
-            # Draw a random number from a unifrom distribution
-            rand = np.random.uniform()
-
-            # Classify as background
-            if rand < self.ratio_b:
-                self.background.append(np.sqrt(2) * \
-                    erfinv(1 - (1 - np.random.uniform()) * erfc(self.xmin / np.sqrt(2))))
-
-            # Classify as foreground
-            else:
-                self.foreground.append(self.xmin * (1 - np.random.uniform())**(-1/3))
-
-
-    def plot_hist(self):
-        """
-        Make a histogram of all drawn samples.
-        """
-
-        num_samples = len(self.foreground) + len(self.background)
-        num_bins = int(np.floor(np.sqrt(num_samples)))
-        self.bins = np.linspace(0, max(np.max(self.background), np.max(self.foreground)),
-                                num_bins)
-
-        plt.figure()
-
-        # Foreground histogram
-        bin_counts, bins, _ = plt.hist(self.foreground, label='Foreground', alpha=0.5, bins=num_bins, cumulative=-1, color='purple')
-
-        # Background histogram
-        plt.hist(self.background, label='Background', alpha=0.5, bins=bins, cumulative=-1, color='0.75')
-
-        plt.legend(loc='upper right')
-        plt.yscale('log', nonposy='clip')
-        plt.xlim(0, None)
-        plt.ylim(1, None)
-        plt.xlabel('SNR')
-        plt.ylabel('Number of Events  with SNR > Corresponding SNR')
-        plt.title('%i Samples with Minimum SNR of %.2f' % (int(num_samples), self.xmin))
-        plt.show()
-
-        print('Number of Foreground: ', len(self.foreground))
-        print('Number of Backgruond:', len(self.background))
-
-
-    def plot_cdf(self):
-        """
-        Make cumulative diagram
-        """
-
-        samples = self.foreground + self.background
-        num_samples = len(samples)
-        counts, bins = np.histogram(samples, bins=self.bins)
-        cdf = np.cumsum(counts) / num_samples
-
-        plt.figure()
-        plt.plot(bins[:-1], cdf)
-        plt.xlim(0, None)
-        plt.ylim(0, None)
-        plt.xlabel('SNR')
-        plt.ylabel('Cumulative Number of Events')
-        plt.title('CDF of %i Samples with Minimum SNR of %.2f' % (num_samples, self.xmin))
-        plt.show()
-
-
 class ManyBackgroundCollection(object):
     """
     A set of events with an associated ranking statistic.
@@ -174,6 +71,7 @@ class ManyBackgroundCollection(object):
         """
 
         glitch_classes = kwargs.pop('glitch_classes', self.glitch_dict.keys())
+        glitch_counts = kwargs.pop('glitch_counts', [10]*len(self.glitch_dict.keys()))
         self.samples = {}
 
         # Draw foreground samples
@@ -191,8 +89,9 @@ class ManyBackgroundCollection(object):
                                        erfc(self.xmin / np.sqrt(2)))
 
         # Define each glitch class to have SNRs defined in the glitch_dict
-        for glitch_class in glitch_classes:
-            self.samples[glitch_class] = self.glitch_dict[glitch_class]
+        for glitch_class, glitch_count in zip(glitch_classes, glitch_counts):
+            self.samples[glitch_class] = np.random.choice(
+                np.array(self.glitch_dict[glitch_class]), size=int(glitch_count))
 
         # Create array of all samples, regardless of label
         self.unlabeled_samples = np.array([])
@@ -212,23 +111,24 @@ class ManyBackgroundCollection(object):
         colors = plt.cm.viridis(np.linspace(0, 1, num_classes))
 
         # FIXME: need a robust and uniform way to define bins
-        bins = np.linspace(self.xmin, 100, num_bins)
+        bins = np.linspace(self.xmin, max(self.unlabeled_samples), num_bins)
 
-        plt.figure(figsize=(20,10))
+        plot = plt.figure(figsize=(20,10))
+        ax = plot.gca()
 
         for idx, icategory in enumerate(self.samples.keys()):
-            plt.hist(self.samples[icategory], label=icategory,
+            ax.hist(self.samples[icategory], label=icategory,
                      color=colors[idx], bins=bins, cumulative=-1,
                      histtype='step')
 
-        plt.legend(loc='upper right')
-        plt.yscale('log', nonposy='clip')
-        plt.xlim(0, None)
-        plt.ylim(1, None)
-        plt.xlabel('SNR')
-        plt.ylabel('Number of Events  with SNR > Corresponding SNR')
-        plt.title('%i Samples with Minimum SNR of %.2f' % (int(self.num_samples), self.xmin))
-        plt.show()
+        plot.legend(loc='upper right')
+        ax.set_yscale('log', nonposy='clip')
+        ax.set_xlim(self.xmin, max(self.unlabeled_samples) + 1)
+        ax.set_ylim(1, None)
+        ax.set_xlabel('SNR')
+        ax.set_ylabel('Number of Events  with SNR > Corresponding SNR')
+        ax.set_title('%i Samples with Minimum SNR of %.2f' % (int(self.num_samples), self.xmin))
+        return plot
 
 
     def lnlike(self, counts, glitch_classes=[]):
